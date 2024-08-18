@@ -31,11 +31,12 @@ variable "subnets" {
   type        = map(number)
   default = {
     "test-app"         = 27,
-    "test-db"          = 28,
     "test-gw"          = 28,
     "test-pe"          = 27,
     "test-sh"          = 27,
     "test-new"          = 28,
+    "test-new-small"          = 30,
+    "test-new-xbig"          = 27,
   }
 }
 
@@ -78,14 +79,31 @@ locals {
   #   "test-sh" = "10.232.9.64/27"
   # }
 
-  # Filter out subnets that already exist
-  filtered_new_subnets = {
+  # Determining which subnets to process for CIDR allocation or retention
+  subnets_to_manage = {
     for subnet_name, cidr_or_mask in var.subnets : 
-    subnet_name => cidr_or_mask 
-    if !contains(keys(local.existing_subnets), subnet_name)
+    subnet_name => contains(keys(local.existing_subnets), subnet_name) ? 
+                   local.existing_subnets[subnet_name] : 
+                   cidr_or_mask
   }
   # Like:
-  # filtered_new_subnets = {
+  # subnets_to_manage = {
+  #   "test-app" = "10.232.9.0/27"
+  #   "test-gw" = "10.232.9.112/28"
+  #   "test-new" = 28
+  #   "test-pe" = "10.232.9.32/27"
+  #   "test-sh" = "10.232.9.64/27"
+  # }
+
+  # Subnets requiring new CIDR calculation
+  # (Matching a subnet with passed mask)
+  new_subnets = {
+    for subnet_name, cidr_or_mask in local.subnets_to_manage :
+    subnet_name => cidr_or_mask
+    if length(regexall("^\\d+$", tostring(cidr_or_mask))) == 1  # Check if the value is just a number (mask size)
+  }
+  # Like:
+  # new_subnets = {
   #   "test-new" = 28
   # }
 
@@ -102,7 +120,13 @@ locals {
   ip_mask_map = { for size in range(20, 33) : format("%d", size) => pow(2, 32 - size) }
 
   # Sort the filtered new subnet names by mask size in descending order (largest to smallest)
-  sorted_new_subnet_names = sort([for subnet, size in local.filtered_new_subnets : format("%02d:%s", -size, subnet)])
+  sorted_new_subnet_names = sort([for subnet, size in local.new_subnets : format("%02d:%s", -size, subnet)])
+  # Like
+  # sorted_new_subnet_names = [
+  #   + "-27:test-new-big",
+  #   + "-28:test-new",
+  #   + "-30:test-new-small",
+  # ]
 
   # Transform sorted_new_subnet_names into a list of subnet names only, ordered by mask size
   sorted_new_subnets = [for item in local.sorted_new_subnet_names : element(split(":", item), 1)]
@@ -112,24 +136,24 @@ locals {
     for subnet in local.sorted_new_subnets :
     subnet => length([
       for s in local.sorted_new_subnets : 
-      local.ip_mask_map[format("%d", local.filtered_new_subnets[s])] # Retrieve the number of IP addresses in the preceding new subnets
+      local.ip_mask_map[format("%d", local.subnets_to_manage[s])] # Retrieve the number of IP addresses in the preceding new subnets
       if s != subnet && index(local.sorted_new_subnets, s) < index(local.sorted_new_subnets, subnet) # Exclude current subnet and only include subnets that are sorted before the current one in the list
     ]) > 0 ? ceil(
       (sum([
         for s in local.sorted_new_subnets : 
-        local.ip_mask_map[format("%d", local.filtered_new_subnets[s])] # Sum the IP addresses of all preceding new subnets
+        local.ip_mask_map[format("%d", local.subnets_to_manage[s])] # Sum the IP addresses of all preceding new subnets
         if s != subnet && index(local.sorted_new_subnets, s) < index(local.sorted_new_subnets, subnet) # Exclude current subnet and sum IP addresses only for subnets that are sorted before the current one
-      ]) + local.total_ips_existing_subnets) / local.ip_mask_map[format("%d", local.filtered_new_subnets[subnet])] # Calculate the offset by adding the total IPs from existing subnets to the summed IPs from preceding new subnets
-    ) : (local.total_ips_existing_subnets > 0 ? local.total_ips_existing_subnets / local.ip_mask_map[format("%d", local.filtered_new_subnets[subnet])] : 0) # If no preceding subnets, use total existing IPs to determine the offset or set to 0 if there are no existing IPs
+      ]) + local.total_ips_existing_subnets) / local.ip_mask_map[format("%d", local.subnets_to_manage[subnet])] # Calculate the offset by adding the total IPs from existing subnets to the summed IPs from preceding new subnets
+    ) : (local.total_ips_existing_subnets > 0 ? local.total_ips_existing_subnets / local.ip_mask_map[format("%d", local.subnets_to_manage[subnet])] : 0) # If no preceding subnets, use total existing IPs to determine the offset or set to 0 if there are no existing IPs
   }
   # Ensure the first new subnet takes into account the existing IPs
-  adjusted_first_subnet_offset = local.total_ips_existing_subnets > 0 && length(local.sorted_new_subnets) > 0 ? ceil(local.total_ips_existing_subnets / local.ip_mask_map[format("%d", var.subnets[local.sorted_new_subnets[0]] )]) : 0
+  # adjusted_first_subnet_offset = local.total_ips_existing_subnets > 0 && length(local.sorted_new_subnets) > 0 ? ceil(local.total_ips_existing_subnets / local.ip_mask_map[format("%d", var.subnets[local.sorted_new_subnets[0]] )]) : 0
 
   # Adjust the offset for the first new subnet
-  subnet_offsets_adjusted = {
-    for subnet in local.sorted_new_subnets :
-    subnet => subnet == local.sorted_new_subnets[0] ? local.adjusted_first_subnet_offset : local.subnet_offsets[subnet]
-  }
+  # subnet_offsets_adjusted = {
+  #   for subnet in local.sorted_new_subnets :
+  #   subnet => subnet == local.sorted_new_subnets[0] ? local.adjusted_first_subnet_offset : local.subnet_offsets[subnet]
+  # }
   # Like: 
   # subnets_offsets_for_newly_created_subnets = {
   #   "test-new" = 8
@@ -140,17 +164,32 @@ locals {
     for subnet in local.sorted_new_subnets :
     subnet => cidrsubnet(
       var.parent_cidr, 
-      var.subnets[subnet] - local.starting_vnet_mask_size,
-      local.subnet_offsets_adjusted[subnet]
+      local.new_subnets[subnet] - local.starting_vnet_mask_size,
+      local.subnet_offsets[subnet]
     )
   }
   # Like
   # subnets = {
   #   "test-new" = "10.232.9.128/28"
   # }
+
+  # Joining the cidr blocks generated for the new subnets with the existing subnet cidr blocks
+  managed_subnet_cidrs = {
+    for k, v in local.subnets_to_manage :
+    k => contains(keys(local.subnet_cidrs), k) ? local.subnet_cidrs[k] : v
+  }
+
 }
 
 # Outputting the final calculated CIDR blocks for each subnet
 output "subnets" {
   value = local.subnet_cidrs
+}
+
+output "managed_subnet_cidrs" {
+  value = local.managed_subnet_cidrs
+}
+
+output "subnets_to_manage" {
+  value = local.subnets_to_manage
 }
