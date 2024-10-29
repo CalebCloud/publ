@@ -58,3 +58,24 @@ variable "subnets" {
     error_message = "All values must be either valid CIDR blocks or subnet masks, but not a mixture of both."
   }
 }
+
+variable "subnets" {
+  description = "Map of subnet names to either CIDR blocks or subnet masks"
+  type        = map(any)
+  default     = {
+    # Example input; replace as needed
+    "example-subnet-1" = "10.232.84.0/24"
+    "example-subnet-2" = 28
+  }
+
+  validation {
+    condition = (
+      alltrue([for v in values(var.subnets) : can(cidrhost(v, 0))]) || 
+      alltrue([for v in values(var.subnets) : v >= 16 && v <= 32])
+    ) && !(
+      anytrue([for v in values(var.subnets) : can(cidrhost(v, 0))]) &&
+      anytrue([for v in values(var.subnets) : v >= 16 && v <= 32])
+    )
+    error_message = "All values must be either valid CIDR blocks or subnet masks, but not a mixture of both."
+  }
+}
