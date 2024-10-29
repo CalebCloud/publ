@@ -79,3 +79,26 @@ variable "subnets" {
     error_message = "All values must be either valid CIDR blocks or subnet masks, but not a mixture of both."
   }
 }
+
+variable "subnets" {
+  description = "Map of subnet names to their respective CIDR or mask sizes"
+  type        = map(any)
+  default     = {
+    "example-subnet-1" = "10.0.0.0/24"
+    "example-subnet-2" = 28
+  }
+
+  validation {
+    condition = (
+      alltrue([for _, v in var.subnets : can(cidrhost(v, 0))]) ||
+      alltrue([for _, v in var.subnets : can(tonumber(v)) && tonumber(v) <= 29])
+    ) && !(alltrue([for _, v in var.subnets : can(cidrhost(v, 0))]) &&
+            alltrue([for _, v in var.subnets : can(tonumber(v)) && tonumber(v) <= 29]))
+
+    error_message = "The 'subnets' variable must contain either all CIDR blocks or all mask sizes, not both."
+  }
+}
+
+locals {
+  use_masks = alltrue([for _, v in var.subnets : can(tonumber(v)) && tonumber(v) <= 29])
+}
